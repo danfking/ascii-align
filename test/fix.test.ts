@@ -92,6 +92,24 @@ describe('fixAsciiAlign', () => {
     }
   });
 
+  it('fixes misaligned lateral boxes without merging them', () => {
+    const input = fixture('lateral-misaligned-ascii.txt');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Each line should have two separate boxes (gap between them preserved)
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const pipeOrPlus = [...trimmed].filter(ch => ch === '|' || ch === '+').length;
+      expect(pipeOrPlus).toBeGreaterThanOrEqual(4); // 2 per box
+    }
+    // Content should be preserved
+    expect(result).toContain('Car');
+    expect(result).toContain('Truck');
+    // Should pass alignment check after fix
+    const check = checkAlignment(result);
+    expect(check.aligned).toBe(true);
+  });
+
   it('preserves DB schema lateral boxes (agent2-prompt1)', () => {
     const input = readFileSync(join(__dirname, 'generated', 'agent2-prompt1.txt'), 'utf-8');
     const result = fixAsciiAlign(input);
