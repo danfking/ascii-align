@@ -1,0 +1,59 @@
+{
+  "name": "ascii-align",
+  "version": "1.0.0",
+  "description": "Fix misaligned ASCII boxes and tables — perfect for AI-generated diagrams",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "ascii-align": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test",
+    "check": "tsc --noEmit"
+  },
+  "keywords": [
+    "ascii",
+    "ascii-art",
+    "alignment",
+    "box-drawing",
+    "unicode",
+    "markdown",
+    "table",
+    "formatter",
+    "cli",
+    "ai",
+    "diagram"
+  ],
+  "author": "Daniel King <daniel.king@xmpro.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danfking/ascii-align.git"
+  },
+  "homepage": "https://github.com/danfking/ascii-align#readme",
+  "bugs": {
+    "url": "https://github.com/danfking/ascii-align/issues"
+  },
+  "dependencies": {
+    "commander": "^13.0.0",
+    "string-width": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

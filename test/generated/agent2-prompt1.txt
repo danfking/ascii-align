@@ -1,0 +1,7 @@
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ users        │  │ orders       │  │ products     │
+├──────────────┤  ├──────────────┤  ├──────────────┤
+│ id       INT │  │ id       INT │  │ id       INT │
+│ name VARCHAR │  │ user_id  INT │  │ name VARCHAR │
+│ email VARCHAR│  │ total DECIMAL│  │ price DECIMAL│
+└──────────────┘  └──────────────┘  └──────────────┘
