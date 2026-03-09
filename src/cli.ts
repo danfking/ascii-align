@@ -1,12 +1,25 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { program } from 'commander';
 import { fixAsciiAlign, checkAlignment } from './fix.js';
+
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
+
+/** Read a file with a user-friendly error on failure */
+function readFile(file: string): string {
+  if (!existsSync(file)) {
+    console.error(`Error: File not found: ${file}`);
+    process.exit(1);
+  }
+  return readFileSync(file, 'utf-8');
+}
 
 program
   .name('ascii-align')
   .description('Fix misaligned ASCII boxes and tables — perfect for AI-generated diagrams')
-  .version('1.0.0');
+  .version(pkg.version);
 
 // Default command: read from stdin
 program
@@ -16,7 +29,7 @@ program
   .action((file: string | undefined, opts: { stdout?: boolean }) => {
     let input: string;
     if (file) {
-      input = readFileSync(file, 'utf-8');
+      input = readFile(file);
     } else {
       // Read from stdin
       input = readFileSync(0, 'utf-8');
@@ -41,7 +54,7 @@ program
   .command('check <file>')
   .description('Check alignment (exit code 1 if misaligned)')
   .action((file: string) => {
-    const input = readFileSync(file, 'utf-8');
+    const input = readFile(file);
     const result = checkAlignment(input);
     if (result.aligned) {
       console.log('All ASCII structures are properly aligned.');
