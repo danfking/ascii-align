@@ -8,6 +8,41 @@ function getBoxChars(style: BoxStyle): BoxChars {
   return BOX_CHARS[style];
 }
 
+// Sets for classifying corner/tee characters by position
+const TOP_LEFT_CHARS = new Set(['+', '┌', '┏', '╔']);
+const TOP_RIGHT_CHARS = new Set(['+', '┐', '┓', '╗']);
+const BOTTOM_LEFT_CHARS = new Set(['+', '└', '┗', '╚']);
+const BOTTOM_RIGHT_CHARS = new Set(['+', '┘', '┛', '╝']);
+const TEE_LEFT_CHARS = new Set(['+', '├', '┣', '╠']);
+const TEE_RIGHT_CHARS = new Set(['+', '┤', '┫', '╣']);
+const TEE_DOWN_CHARS = new Set(['+', '┬', '┳', '╦']);
+const TEE_UP_CHARS = new Set(['+', '┴', '┻', '╩']);
+const CROSS_CHARS = new Set(['+', '┼', '╋', '╬']);
+
+/**
+ * Map a corner/tee character to the correct character for the detected style.
+ * Uses position in the region (top/bottom/mid) to disambiguate '+' which
+ * maps to all corners in ASCII style.
+ */
+function mapCornerToStyle(ch: string, chars: BoxChars, side: 'left' | 'right', position: 'top' | 'bottom' | 'mid'): string {
+  // For non-ASCII chars, classify by character identity
+  if (TOP_LEFT_CHARS.has(ch) && !BOTTOM_LEFT_CHARS.has(ch) && side === 'left') return chars.topLeft;
+  if (TOP_RIGHT_CHARS.has(ch) && !BOTTOM_RIGHT_CHARS.has(ch) && side === 'right') return chars.topRight;
+  if (BOTTOM_LEFT_CHARS.has(ch) && !TOP_LEFT_CHARS.has(ch) && side === 'left') return chars.bottomLeft;
+  if (BOTTOM_RIGHT_CHARS.has(ch) && !TOP_RIGHT_CHARS.has(ch) && side === 'right') return chars.bottomRight;
+  if (TEE_LEFT_CHARS.has(ch) && ch !== '+' && side === 'left') return chars.teeLeft;
+  if (TEE_RIGHT_CHARS.has(ch) && ch !== '+' && side === 'right') return chars.teeRight;
+  if (TEE_DOWN_CHARS.has(ch) && ch !== '+') return chars.teeDown;
+  if (TEE_UP_CHARS.has(ch) && ch !== '+') return chars.teeUp;
+  if (CROSS_CHARS.has(ch) && ch !== '+') return chars.cross;
+
+  // For '+' (ASCII) or ambiguous chars, use positional info
+  if (position === 'top') return side === 'left' ? chars.topLeft : chars.topRight;
+  if (position === 'bottom') return side === 'left' ? chars.bottomLeft : chars.bottomRight;
+  // Mid-border: use tee chars
+  return side === 'left' ? chars.teeLeft : chars.teeRight;
+}
+
 /** Extract the leading whitespace (indentation) from a line */
 function getIndent(line: string): string {
   const match = line.match(/^(\s*)/);
@@ -43,16 +78,22 @@ function fixBox(lines: string[], region: Region): string[] {
 
   // Rebuild each line
   const result: string[] = [];
+  let borderIndex = 0;
+  const totalBorders = regionLines.filter(l => isBorderLine(l)).length;
   for (const line of regionLines) {
     if (isBorderLine(line)) {
       const trimmed = line.trim();
-      // Detect which corners/tees are present
       const firstChar = trimmed[0];
       const lastChar = trimmed[trimmed.length - 1];
 
-      // Determine the left and right characters to use
-      let left = firstChar;
-      let right = lastChar;
+      // Determine position: first border = top, last = bottom, others = mid
+      const position: 'top' | 'bottom' | 'mid' =
+        borderIndex === 0 ? 'top' : borderIndex === totalBorders - 1 ? 'bottom' : 'mid';
+      borderIndex++;
+
+      // Map corner/tee characters to the detected style to handle mixed-style boxes
+      const left = mapCornerToStyle(firstChar, chars, 'left', position);
+      const right = mapCornerToStyle(lastChar, chars, 'right', position);
 
       // Build the border: left + horizontal fill + right
       result.push(indent + left + chars.horizontal.repeat(maxContentWidth) + right);

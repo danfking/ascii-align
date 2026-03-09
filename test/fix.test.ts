@@ -137,6 +137,35 @@ describe('fixAsciiAlign', () => {
     expect(result).toContain('Cat');
     expect(result).toContain('Eagle');
   });
+
+  it('normalizes mixed-style box to use consistent characters (#7)', () => {
+    // ASCII top border with Unicode bottom border
+    // Detected as ASCII, so bottom corners should become + not └┘
+    const input = '+------+\n| test |\n└──┘';
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Bottom border corners should match detected style (ASCII: +)
+    expect(lines[2][0]).toBe('+');
+    expect(lines[2][lines[2].length - 1]).toBe('+');
+    // Bottom border fill should be ASCII dashes
+    expect(lines[2]).not.toContain('─');
+    // All borders should be same width
+    expect(lines[0].length).toBe(lines[2].length);
+  });
+
+  it('normalizes ASCII bottom in Unicode box to matching style (#7)', () => {
+    // Unicode top with ASCII bottom
+    // Detected as light, so bottom corners should become └┘ not +
+    const input = '┌──────┐\n│ test │\n+--+';
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Bottom border corners should match detected style (light: └ ┘)
+    expect(lines[2][0]).toBe('└');
+    expect(lines[2][lines[2].length - 1]).toBe('┘');
+    // Bottom border fill should be Unicode ─
+    expect(lines[2]).not.toContain('-');
+    expect(lines[0].length).toBe(lines[2].length);
+  });
 });
 
 describe('checkAlignment', () => {
