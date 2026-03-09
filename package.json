@@ -1,6 +1,6 @@
 {
   "name": "ascii-align",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Fix misaligned ASCII boxes and tables — perfect for AI-generated diagrams",
   "type": "module",
   "main": "./dist/index.js",

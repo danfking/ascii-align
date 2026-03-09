@@ -97,9 +97,25 @@ function isBorderSegmentAt(line: string, start: number, end: number): boolean {
   return true;
 }
 
+/**
+ * Find a border segment near the expected column range (within tolerance).
+ * Returns the actual {start, end} of the found segment, or null.
+ * This handles misaligned boxes where the bottom border is shorter/longer than the top.
+ */
+function findBorderSegmentNear(line: string, expectedStart: number, expectedEnd: number, tolerance: number): { start: number; end: number } | null {
+  const segments = findBorderSegments(line);
+  for (const seg of segments) {
+    if (Math.abs(seg.start - expectedStart) <= tolerance &&
+        Math.abs(seg.end - expectedEnd) <= tolerance) {
+      return seg;
+    }
+  }
+  return null;
+}
+
 /** Check if a line has vertical delimiters near the expected segment edges (with tolerance) */
-function isContentSegmentAt(line: string, start: number, end: number): boolean {
-  return findVerticalNear(line, start, 2) >= 0 && findVerticalNear(line, end, 2) >= 0;
+function isContentSegmentAt(line: string, start: number, end: number, tolerance: number = 2): boolean {
+  return findVerticalNear(line, start, tolerance) >= 0 && findVerticalNear(line, end, tolerance) >= 0;
 }
 
 /** Check if a line is a markdown table separator (| --- | --- |) */
@@ -134,24 +150,29 @@ function detectLateralBox(
   start: number,
   end: number
 ): number {
+  // Use a wider tolerance for border and content matching to handle misaligned boxes
+  // where borders or content are shorter/longer than the top border
+  const borderTolerance = Math.max(Math.ceil((end - start) * 0.5), 4);
+  const contentTolerance = borderTolerance;
   let j = topLine + 1;
   let hasContent = false;
 
   while (j < lines.length) {
-    if (isBorderSegmentAt(lines[j], start, end)) {
+    const borderSeg = findBorderSegmentNear(lines[j], start, end, borderTolerance);
+    if (borderSeg) {
       if (hasContent) {
         // Check for mid-border: is there more content below at same columns?
         let k = j + 1;
         let moreContent = false;
-        while (k < lines.length && !isBorderSegmentAt(lines[k], start, end)) {
-          if (isContentSegmentAt(lines[k], start, end)) {
+        while (k < lines.length && !findBorderSegmentNear(lines[k], start, end, borderTolerance)) {
+          if (isContentSegmentAt(lines[k], start, end, contentTolerance)) {
             moreContent = true;
           } else {
             break;
           }
           k++;
         }
-        if (moreContent && k < lines.length && isBorderSegmentAt(lines[k], start, end)) {
+        if (moreContent && k < lines.length && findBorderSegmentNear(lines[k], start, end, borderTolerance)) {
           // Mid-border, keep scanning
           j = k;
           continue;
@@ -159,7 +180,7 @@ function detectLateralBox(
         // Bottom border found
         return j;
       }
-    } else if (isContentSegmentAt(lines[j], start, end)) {
+    } else if (isContentSegmentAt(lines[j], start, end, contentTolerance)) {
       hasContent = true;
     } else {
       break;

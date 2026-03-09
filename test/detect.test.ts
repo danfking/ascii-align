@@ -164,6 +164,18 @@ describe('detectRegions', () => {
     expect(regions[1].startCol!).toBeLessThan(regions[2].startCol!);
   });
 
+  it('detects lateral boxes with misaligned borders as separate regions', () => {
+    const input = fixture('lateral-misaligned-ascii.txt');
+    const regions = detectRegions(input);
+    expect(regions).toHaveLength(2);
+    expect(regions[0].type).toBe('box');
+    expect(regions[1].type).toBe('box');
+    expect(regions[0].startCol).toBeDefined();
+    expect(regions[1].startCol).toBeDefined();
+    // Should be separate, not merged
+    expect(regions[1].startCol!).toBeGreaterThan(regions[0].endCol!);
+  });
+
   it('detects lateral boxes in DB schema (agent2-prompt1)', () => {
     const input = readFileSync(join(__dirname, 'generated', 'agent2-prompt1.txt'), 'utf-8');
     const regions = detectRegions(input);

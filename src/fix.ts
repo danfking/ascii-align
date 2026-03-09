@@ -79,20 +79,43 @@ function findVerticalNear(line: string, pos: number, tolerance: number): number 
   return -1;
 }
 
+const FIX_HORIZONTAL = new Set(['-', '─', '━', '═']);
+const FIX_CORNER = new Set([
+  '+', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
+  '┏', '┓', '┗', '┛', '┣', '┫', '┳', '┻', '╋',
+  '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
+]);
+
 /** Check if a column range of a line contains a border segment (all border chars) */
 function isBorderSegmentAtFix(line: string, start: number, end: number): boolean {
-  const HORIZONTAL = new Set(['-', '─', '━', '═']);
-  const CORNER = new Set([
-    '+', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
-    '┏', '┓', '┗', '┛', '┣', '┫', '┳', '┻', '╋',
-    '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
-  ]);
   if (end >= line.length) return false;
   for (let i = start; i <= end; i++) {
     const ch = line[i];
-    if (!HORIZONTAL.has(ch) && !CORNER.has(ch)) return false;
+    if (!FIX_HORIZONTAL.has(ch) && !FIX_CORNER.has(ch)) return false;
   }
   return true;
+}
+
+/** Find contiguous border segments in a line (mirrors detect.ts findBorderSegments) */
+function findBorderSegmentsInFix(line: string): { start: number; end: number }[] {
+  const segments: { start: number; end: number }[] = [];
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch !== ' ' && (FIX_HORIZONTAL.has(ch) || FIX_CORNER.has(ch))) {
+      const start = i;
+      while (i < line.length && line[i] !== ' ' && (FIX_HORIZONTAL.has(line[i]) || FIX_CORNER.has(line[i]))) {
+        i++;
+      }
+      const end = i - 1;
+      if (end - start >= 2) {
+        segments.push({ start, end });
+      }
+    } else {
+      i++;
+    }
+  }
+  return segments;
 }
 
 /** Fix a lateral box: find actual column range, extract, fix, splice back */
@@ -100,21 +123,41 @@ function fixLateralBox(lines: string[], region: Region): void {
   const { startCol: refStart, endCol: refEnd, startLine, endLine } = region;
   if (refStart === undefined || refEnd === undefined) return;
 
-  // Find the actual column range by scanning all content lines for vertical chars
-  // near the expected border positions. Content may be wider than the border.
+  // Find the actual column range by scanning all lines for border segments and
+  // content vertical chars. Use wide tolerance since content/borders may be
+  // significantly wider or narrower than the reference range.
+  const boxWidth = refEnd - refStart;
+  const tolerance = Math.max(Math.ceil(boxWidth * 0.5), 4);
   let actualStart = refStart;
   let actualEnd = refEnd;
 
   for (let i = startLine; i <= endLine; i++) {
     const line = lines[i] || '';
-    // Skip border lines — they're at exact positions
-    if (isBorderSegmentAtFix(line, refStart, refEnd)) continue;
 
-    // For content lines, find actual vertical positions
-    const startPos = findVerticalNear(line, refStart, 2);
-    const endPos = findVerticalNear(line, refEnd, 2);
-    if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
-    if (endPos >= 0) actualEnd = Math.max(actualEnd, endPos);
+    // For border lines, find actual border segment positions
+    if (isBorderSegmentAtFix(line, refStart, refEnd)) {
+      // Exact match — use as-is
+    } else {
+      // Check for border segments near expected range (misaligned borders)
+      const segments = findBorderSegmentsInFix(line);
+      let foundBorder = false;
+      for (const seg of segments) {
+        if (Math.abs(seg.start - refStart) <= tolerance &&
+            Math.abs(seg.end - refEnd) <= tolerance) {
+          actualStart = Math.min(actualStart, seg.start);
+          actualEnd = Math.max(actualEnd, seg.end);
+          foundBorder = true;
+          break;
+        }
+      }
+      if (!foundBorder) {
+        // For content lines, find actual vertical positions with wide tolerance
+        const startPos = findVerticalNear(line, refStart, tolerance);
+        const endPos = findVerticalNear(line, refEnd, tolerance);
+        if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
+        if (endPos >= 0) actualEnd = Math.max(actualEnd, endPos);
+      }
+    }
   }
 
   // Extract sub-strings for this box using the actual range
