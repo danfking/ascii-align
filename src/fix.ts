@@ -247,13 +247,19 @@ function extractLateralBox(
           Math.abs(seg.end - refEnd) <= tolerance) {
         // Check if there's also a vertical bar near refEnd — if so,
         // this is an inner border row (e.g. "| +---+ |"), not the box's own border.
-        const vertEnd = findVerticalNear(line, refEnd, tolerance);
-        if (vertEnd >= 0 && vertEnd !== seg.end) {
-          const vertStart = findVerticalNear(line, refStart, tolerance);
-          if (vertStart >= 0) actualStart = Math.min(actualStart, vertStart);
-          lineEnd = vertEnd;
-          foundBorder = true;
-          break;
+        // Only treat as inner border if the border segment is strictly inside
+        // the box boundaries (start > refStart or end < refEnd), indicating it's
+        // a nested inner box border rather than the box's own top/bottom border.
+        const isInnerBorder = seg.start > refStart || seg.end < refEnd;
+        if (isInnerBorder) {
+          const vertEnd = findVerticalNear(line, refEnd, tolerance);
+          if (vertEnd >= 0 && vertEnd !== seg.end) {
+            const vertStart = findVerticalNear(line, refStart, tolerance);
+            if (vertStart >= 0) actualStart = Math.min(actualStart, vertStart);
+            lineEnd = vertEnd;
+            foundBorder = true;
+            break;
+          }
         }
         actualStart = Math.min(actualStart, seg.start);
         lineEnd = seg.end;
