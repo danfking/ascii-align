@@ -119,9 +119,13 @@ function isContentSegmentAt(line: string, start: number, end: number, tolerance:
 }
 
 /** Check if a line is a markdown table separator (| --- | --- |) */
-function isMarkdownSeparator(line: string): boolean {
+export function isMarkdownSeparator(line: string): boolean {
   const trimmed = line.trim();
-  return /^\|[\s\-:]+(\|[\s\-:]+)*\|$/.test(trimmed);
+  if (!/^\|[\s\-:]+(\|[\s\-:]+)*\|$/.test(trimmed)) return false;
+  // Each cell must contain at least one dash to avoid false positives
+  // (e.g., sequence diagram lifelines like "| |")
+  const cells = trimmed.split('|').slice(1, -1);
+  return cells.every(cell => cell.includes('-'));
 }
 
 /** Check if a line is a markdown table row (| content | content |) */
@@ -242,8 +246,8 @@ export function detectRegions(text: string): Region[] {
     let hasContent = false;
     while (j < lines.length) {
       if (isBorderLine(lines[j])) {
-        if (hasContent) {
-          // This could be a mid-border or bottom border
+        if (hasContent || j === i + 1) {
+          // This could be a mid-border or bottom border (or empty box if j === i + 1)
           // Check if there's more content after
           let k = j + 1;
           let moreContent = false;
@@ -260,7 +264,7 @@ export function detectRegions(text: string): Region[] {
             j = k;
             continue;
           }
-          // Bottom border found
+          // Bottom border found (or empty box)
           break;
         }
       } else if (isContentLine(lines[j])) {
@@ -271,7 +275,7 @@ export function detectRegions(text: string): Region[] {
       j++;
     }
 
-    if (hasContent && j < lines.length && isBorderLine(lines[j])) {
+    if ((hasContent || j === i + 1) && j < lines.length && isBorderLine(lines[j])) {
       regions.push({ startLine: i, endLine: j, type: 'box', style });
       for (let k = i; k <= j; k++) used.add(k);
     }
