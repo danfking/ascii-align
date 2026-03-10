@@ -218,71 +218,137 @@ function findBorderSegmentsInFix(line: string): { start: number; end: number }[]
   return segments;
 }
 
-/** Fix a lateral box: find actual column range, extract, fix, splice back */
-function fixLateralBox(lines: string[], region: Region, depth: number = 0): void {
+/**
+ * Extract a lateral box's sub-lines from the original lines using per-line
+ * border/content positions. Returns the sub-lines and per-line actual ranges.
+ */
+function extractLateralBox(
+  lines: string[],
+  region: Region
+): { subLines: string[]; actualStart: number; lineEnds: number[] } {
   const { startCol: refStart, endCol: refEnd, startLine, endLine } = region;
-  if (refStart === undefined || refEnd === undefined) return;
+  if (refStart === undefined || refEnd === undefined) {
+    return { subLines: [], actualStart: refStart ?? 0, lineEnds: [] };
+  }
 
-  // Find the actual column range by scanning all lines for border segments and
-  // content vertical chars. Use wide tolerance since content/borders may be
-  // significantly wider or narrower than the reference range.
   const boxWidth = refEnd - refStart;
   const tolerance = Math.max(Math.ceil(boxWidth * 0.5), 4);
   let actualStart = refStart;
-  let actualEnd = refEnd;
+  const lineEnds: number[] = [];
 
   for (let i = startLine; i <= endLine; i++) {
     const line = lines[i] || '';
+    let lineEnd = refEnd;
 
-    // For border lines, find actual border segment positions
-    if (isBorderSegmentAtFix(line, refStart, refEnd)) {
-      // Exact match — use as-is
-    } else {
-      // Check for border segments near expected range (misaligned borders)
-      const segments = findBorderSegmentsInFix(line);
-      let foundBorder = false;
-      for (const seg of segments) {
-        if (Math.abs(seg.start - refStart) <= tolerance &&
-            Math.abs(seg.end - refEnd) <= tolerance) {
-          actualStart = Math.min(actualStart, seg.start);
-          actualEnd = Math.max(actualEnd, seg.end);
-          foundBorder = true;
+    const segments = findBorderSegmentsInFix(line);
+    let foundBorder = false;
+    for (const seg of segments) {
+      if (Math.abs(seg.start - refStart) <= tolerance &&
+          Math.abs(seg.end - refEnd) <= tolerance) {
+        actualStart = Math.min(actualStart, seg.start);
+        lineEnd = seg.end;
+        foundBorder = true;
+        break;
+      }
+    }
+    if (!foundBorder) {
+      const startPos = findVerticalNear(line, refStart, tolerance);
+      const endPos = findVerticalNear(line, refEnd, tolerance);
+      if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
+      if (endPos >= 0) lineEnd = endPos;
+    }
+
+    lineEnds.push(lineEnd);
+  }
+
+  // Extract sub-lines using per-line end positions
+  const subLines: string[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    const lineEnd = lineEnds[i - startLine];
+    const line = (lines[i] || '').padEnd(lineEnd + 1);
+    subLines.push(line.substring(actualStart, lineEnd + 1));
+  }
+
+  return { subLines, actualStart, lineEnds };
+}
+
+/** Fix a group of lateral boxes on the same lines. Extracts all boxes,
+ *  measures gaps from the ORIGINAL lines, fixes each box, then reassembles. */
+function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: number = 0): void {
+  if (lateralRegions.length === 0) return;
+
+  // Sort left-to-right by startCol
+  const sorted = [...lateralRegions].sort((a, b) => (a.startCol ?? 0) - (b.startCol ?? 0));
+  const startLine = sorted[0].startLine;
+  const endLine = sorted[0].endLine;
+
+  // Save original lines for gap measurement
+  const origLines: string[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    origLines.push(lines[i] || '');
+  }
+
+  // Extract and fix each box independently from original lines
+  const fixedBoxes: { actualStart: number; lineEnds: number[]; fixedSub: string[] }[] = [];
+  for (const region of sorted) {
+    const { subLines, actualStart, lineEnds } = extractLateralBox(lines, region);
+
+    const fakeRegion: Region = {
+      startLine: 0,
+      endLine: subLines.length - 1,
+      type: region.type,
+      style: region.style,
+    };
+    const fixedSub = fixBox(subLines, fakeRegion, depth);
+    fixedBoxes.push({ actualStart, lineEnds, fixedSub });
+  }
+
+  // Measure gaps between adjacent boxes from original lines
+  const gaps: number[][] = []; // gaps[boxIdx][lineOffset] = gap width after box
+  for (let boxIdx = 0; boxIdx < sorted.length - 1; boxIdx++) {
+    const gapsForBox: number[] = [];
+    for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
+      const origLine = origLines[lineOffset];
+      const thisBoxEnd = fixedBoxes[boxIdx].lineEnds[lineOffset];
+
+      // Measure gap: spaces between this box's end and next non-space char in original line
+      let gapWidth = 0;
+      for (let col = thisBoxEnd + 1; col < origLine.length; col++) {
+        if (origLine[col] === ' ') {
+          gapWidth++;
+        } else {
           break;
         }
       }
-      if (!foundBorder) {
-        // For content lines, find actual vertical positions with wide tolerance
-        const startPos = findVerticalNear(line, refStart, tolerance);
-        const endPos = findVerticalNear(line, refEnd, tolerance);
-        if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
-        if (endPos >= 0) actualEnd = Math.max(actualEnd, endPos);
+      // Ensure at least 1 space gap
+      gapsForBox.push(Math.max(gapWidth, 1));
+    }
+    gaps.push(gapsForBox);
+  }
+
+  // Reassemble lines: indent + box1 + gap1 + box2 + gap2 + ... + trailing
+  for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
+    const lineIdx = startLine + lineOffset;
+    const origLine = origLines[lineOffset];
+    const indent = origLine.substring(0, fixedBoxes[0].actualStart);
+
+    let result = indent;
+    for (let boxIdx = 0; boxIdx < fixedBoxes.length; boxIdx++) {
+      result += fixedBoxes[boxIdx].fixedSub[lineOffset];
+      if (boxIdx < fixedBoxes.length - 1) {
+        result += ' '.repeat(gaps[boxIdx][lineOffset]);
       }
     }
-  }
 
-  // Extract sub-strings for this box using the actual range
-  const subLines: string[] = [];
-  for (let i = startLine; i <= endLine; i++) {
-    const line = (lines[i] || '').padEnd(actualEnd + 1);
-    subLines.push(line.substring(actualStart, actualEnd + 1));
-  }
+    // Append any trailing content after the last box in the original line
+    const lastBoxEnd = fixedBoxes[fixedBoxes.length - 1].lineEnds[lineOffset];
+    const trailing = origLine.substring(lastBoxEnd + 1);
+    const trimmedTrailing = trailing.trimStart();
+    if (trimmedTrailing.length > 0) {
+      result += trailing;
+    }
 
-  // Fix the sub-box using existing logic
-  const fakeRegion: Region = {
-    startLine: 0,
-    endLine: subLines.length - 1,
-    type: region.type,
-    style: region.style,
-  };
-  const fixedSub = fixBox(subLines, fakeRegion, depth);
-
-  // Splice fixed sub-strings back into original lines
-  for (let i = 0; i < fixedSub.length; i++) {
-    const lineIdx = startLine + i;
-    const line = (lines[lineIdx] || '').padEnd(actualEnd + 1);
-    const before = line.substring(0, actualStart);
-    const after = line.substring(actualEnd + 1);
-    lines[lineIdx] = before + fixedSub[i] + after;
+    lines[lineIdx] = result;
   }
 }
 
@@ -376,13 +442,29 @@ function fixAsciiAlignRecursive(text: string, depth: number): string {
     return (b.startCol ?? 0) - (a.startCol ?? 0);
   });
 
+  // Group lateral boxes by startLine for joint processing
+  const lateralGroups = new Map<number, Region[]>();
+  const processedLateralLines = new Set<number>();
+
+  for (const region of sortedRegions) {
+    if (region.startCol !== undefined && region.endCol !== undefined) {
+      const key = region.startLine;
+      if (!lateralGroups.has(key)) lateralGroups.set(key, []);
+      lateralGroups.get(key)!.push(region);
+    }
+  }
+
   for (const region of sortedRegions) {
     if (region.type === 'table' && region.style === 'markdown') {
       const fixedLines = fixMarkdownTable(lines, region);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
     } else if (region.startCol !== undefined && region.endCol !== undefined) {
-      // Lateral box: fix in-place within column range
-      fixLateralBox(lines, region, depth);
+      // Lateral box: process all boxes on this line as a group (once)
+      if (!processedLateralLines.has(region.startLine)) {
+        processedLateralLines.add(region.startLine);
+        const group = lateralGroups.get(region.startLine) ?? [region];
+        fixLateralBoxGroup(lines, group, depth);
+      }
     } else {
       const fixedLines = fixBox(lines, region, depth);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
