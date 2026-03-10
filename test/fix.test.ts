@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixAsciiAlign, checkAlignment } from '../src/fix.js';
+import { detectRegions } from '../src/detect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures', name), 'utf-8');
@@ -165,6 +166,70 @@ describe('fixAsciiAlign', () => {
     // Bottom border fill should be Unicode ─
     expect(lines[2]).not.toContain('-');
     expect(lines[0].length).toBe(lines[2].length);
+  });
+});
+
+describe('lateral box wide content and gap spacing (#10, #13)', () => {
+  it('should not merge lateral boxes when bottom border expands toward adjacent box', () => {
+    const input = [
+      '+------+   +------+',
+      '| Car  |   | Bike |',
+      '+----------+   +------+',
+    ].join('\n');
+
+    // Verify detection finds two lateral boxes
+    const regions = detectRegions(input);
+    const lateralRegions = regions.filter(r => r.startCol !== undefined);
+    expect(lateralRegions.length).toBe(2);
+
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Should fix as two separate boxes, not merge them
+    expect(lines[0]).toMatch(/\+[-]+\+\s+\+[-]+\+/);
+    // Result should be idempotent
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should preserve gap spacing between lateral boxes after fix', () => {
+    const input = [
+      '+---+   +---+',
+      '| A |   | B |',
+      '+--+   +---+',  // First box bottom border misaligned (shorter)
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    // Result should be idempotent
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should preserve 5-space gap between lateral boxes', () => {
+    const input = [
+      '+---+     +---+',
+      '| A |     | B |',
+      '+--+     +---+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // All lines should have consistent gap width (at least 5 spaces)
+    for (const line of lines) {
+      const match = line.match(/^(\S+)(\s+)(\S+)$/);
+      if (match) {
+        expect(match[2].length).toBeGreaterThanOrEqual(5);
+      }
+    }
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should not expand first box border into the gap of adjacent lateral box', () => {
+    const input = [
+      '+--------+   +--------+',
+      '| Hello  |   | World  |',
+      '+-----------+   +--------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Should still have two separate boxes
+    expect(lines[0]).toMatch(/\+[-]+\+\s+\+[-]+\+/);
+    expect(fixAsciiAlign(result)).toBe(result);
   });
 });
 

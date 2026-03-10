@@ -1,5 +1,5 @@
 import type { Region, BoxStyle, BoxChars } from './types.js';
-import { BOX_CHARS, detectRegions, detectStyle, isBorderLine, VERTICAL_CHARS } from './detect.js';
+import { BOX_CHARS, detectRegions, detectStyle, isBorderLine, isMarkdownSeparator, VERTICAL_CHARS } from './detect.js';
 import { visualWidth, visualPadEnd } from './measure.js';
 
 /** Get the box character set for a given style */
@@ -49,8 +49,10 @@ function getIndent(line: string): string {
   return match ? match[1] : '';
 }
 
+const MAX_NESTING_DEPTH = 10;
+
 /** Fix a box region: align all borders and content to the widest line */
-function fixBox(lines: string[], region: Region): string[] {
+function fixBox(lines: string[], region: Region, depth: number = 0): string[] {
   const { startLine, endLine, style } = region;
   const chars = getBoxChars(style);
   const regionLines = lines.slice(startLine, endLine + 1);
@@ -108,6 +110,63 @@ function fixBox(lines: string[], region: Region): string[] {
     }
   }
 
+  // Phase 2: Recursively fix inner content (nested boxes)
+  if (depth < MAX_NESTING_DEPTH) {
+    // Extract inner content from non-border lines
+    const innerLines: string[] = [];
+    const lineMapping: { resultIdx: number; isBorder: boolean }[] = [];
+    for (let i = 0; i < result.length; i++) {
+      const line = result[i];
+      const stripped = line.substring(indent.length);
+      const isBorder = isBorderLine(stripped);
+      lineMapping.push({ resultIdx: i, isBorder });
+      if (!isBorder) {
+        // Strip the outer vertical chars (indent + vert + content + vert)
+        // Content is between the first and last char after indent
+        innerLines.push(stripped.slice(1, -1));
+      }
+    }
+
+    if (innerLines.length > 0) {
+      const innerText = innerLines.join('\n');
+      const fixedInner = fixAsciiAlignRecursive(innerText, depth + 1);
+
+      if (fixedInner !== innerText) {
+        const fixedInnerLines = fixedInner.split('\n');
+
+        // Re-measure: inner content may have grown
+        const vert = chars.vertical;
+        const newContentWidths: number[] = [];
+        for (const fl of fixedInnerLines) {
+          newContentWidths.push(visualWidth(fl));
+        }
+        // Also include border widths from current result
+        for (const m of lineMapping) {
+          if (m.isBorder) {
+            newContentWidths.push(maxContentWidth);
+          }
+        }
+        const newMaxWidth = Math.max(...newContentWidths, maxContentWidth);
+
+        // Rebuild result with fixed inner content
+        let innerIdx = 0;
+        for (let i = 0; i < result.length; i++) {
+          if (!lineMapping[i].isBorder) {
+            const fixedLine = fixedInnerLines[innerIdx++];
+            const padded = visualPadEnd(fixedLine, newMaxWidth);
+            result[i] = indent + vert + padded + vert;
+          } else if (newMaxWidth !== maxContentWidth) {
+            // Rebuild border at new width
+            const stripped = result[i].substring(indent.length);
+            const firstChar = stripped[0];
+            const lastChar = stripped[stripped.length - 1];
+            result[i] = indent + firstChar + chars.horizontal.repeat(newMaxWidth) + lastChar;
+          }
+        }
+      }
+    }
+  }
+
   return result;
 }
 
@@ -159,71 +218,137 @@ function findBorderSegmentsInFix(line: string): { start: number; end: number }[]
   return segments;
 }
 
-/** Fix a lateral box: find actual column range, extract, fix, splice back */
-function fixLateralBox(lines: string[], region: Region): void {
+/**
+ * Extract a lateral box's sub-lines from the original lines using per-line
+ * border/content positions. Returns the sub-lines and per-line actual ranges.
+ */
+function extractLateralBox(
+  lines: string[],
+  region: Region
+): { subLines: string[]; actualStart: number; lineEnds: number[] } {
   const { startCol: refStart, endCol: refEnd, startLine, endLine } = region;
-  if (refStart === undefined || refEnd === undefined) return;
+  if (refStart === undefined || refEnd === undefined) {
+    return { subLines: [], actualStart: refStart ?? 0, lineEnds: [] };
+  }
 
-  // Find the actual column range by scanning all lines for border segments and
-  // content vertical chars. Use wide tolerance since content/borders may be
-  // significantly wider or narrower than the reference range.
   const boxWidth = refEnd - refStart;
   const tolerance = Math.max(Math.ceil(boxWidth * 0.5), 4);
   let actualStart = refStart;
-  let actualEnd = refEnd;
+  const lineEnds: number[] = [];
 
   for (let i = startLine; i <= endLine; i++) {
     const line = lines[i] || '';
+    let lineEnd = refEnd;
 
-    // For border lines, find actual border segment positions
-    if (isBorderSegmentAtFix(line, refStart, refEnd)) {
-      // Exact match — use as-is
-    } else {
-      // Check for border segments near expected range (misaligned borders)
-      const segments = findBorderSegmentsInFix(line);
-      let foundBorder = false;
-      for (const seg of segments) {
-        if (Math.abs(seg.start - refStart) <= tolerance &&
-            Math.abs(seg.end - refEnd) <= tolerance) {
-          actualStart = Math.min(actualStart, seg.start);
-          actualEnd = Math.max(actualEnd, seg.end);
-          foundBorder = true;
+    const segments = findBorderSegmentsInFix(line);
+    let foundBorder = false;
+    for (const seg of segments) {
+      if (Math.abs(seg.start - refStart) <= tolerance &&
+          Math.abs(seg.end - refEnd) <= tolerance) {
+        actualStart = Math.min(actualStart, seg.start);
+        lineEnd = seg.end;
+        foundBorder = true;
+        break;
+      }
+    }
+    if (!foundBorder) {
+      const startPos = findVerticalNear(line, refStart, tolerance);
+      const endPos = findVerticalNear(line, refEnd, tolerance);
+      if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
+      if (endPos >= 0) lineEnd = endPos;
+    }
+
+    lineEnds.push(lineEnd);
+  }
+
+  // Extract sub-lines using per-line end positions
+  const subLines: string[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    const lineEnd = lineEnds[i - startLine];
+    const line = (lines[i] || '').padEnd(lineEnd + 1);
+    subLines.push(line.substring(actualStart, lineEnd + 1));
+  }
+
+  return { subLines, actualStart, lineEnds };
+}
+
+/** Fix a group of lateral boxes on the same lines. Extracts all boxes,
+ *  measures gaps from the ORIGINAL lines, fixes each box, then reassembles. */
+function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: number = 0): void {
+  if (lateralRegions.length === 0) return;
+
+  // Sort left-to-right by startCol
+  const sorted = [...lateralRegions].sort((a, b) => (a.startCol ?? 0) - (b.startCol ?? 0));
+  const startLine = sorted[0].startLine;
+  const endLine = sorted[0].endLine;
+
+  // Save original lines for gap measurement
+  const origLines: string[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    origLines.push(lines[i] || '');
+  }
+
+  // Extract and fix each box independently from original lines
+  const fixedBoxes: { actualStart: number; lineEnds: number[]; fixedSub: string[] }[] = [];
+  for (const region of sorted) {
+    const { subLines, actualStart, lineEnds } = extractLateralBox(lines, region);
+
+    const fakeRegion: Region = {
+      startLine: 0,
+      endLine: subLines.length - 1,
+      type: region.type,
+      style: region.style,
+    };
+    const fixedSub = fixBox(subLines, fakeRegion, depth);
+    fixedBoxes.push({ actualStart, lineEnds, fixedSub });
+  }
+
+  // Measure gaps between adjacent boxes from original lines
+  const gaps: number[][] = []; // gaps[boxIdx][lineOffset] = gap width after box
+  for (let boxIdx = 0; boxIdx < sorted.length - 1; boxIdx++) {
+    const gapsForBox: number[] = [];
+    for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
+      const origLine = origLines[lineOffset];
+      const thisBoxEnd = fixedBoxes[boxIdx].lineEnds[lineOffset];
+
+      // Measure gap: spaces between this box's end and next non-space char in original line
+      let gapWidth = 0;
+      for (let col = thisBoxEnd + 1; col < origLine.length; col++) {
+        if (origLine[col] === ' ') {
+          gapWidth++;
+        } else {
           break;
         }
       }
-      if (!foundBorder) {
-        // For content lines, find actual vertical positions with wide tolerance
-        const startPos = findVerticalNear(line, refStart, tolerance);
-        const endPos = findVerticalNear(line, refEnd, tolerance);
-        if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
-        if (endPos >= 0) actualEnd = Math.max(actualEnd, endPos);
+      // Ensure at least 1 space gap
+      gapsForBox.push(Math.max(gapWidth, 1));
+    }
+    gaps.push(gapsForBox);
+  }
+
+  // Reassemble lines: indent + box1 + gap1 + box2 + gap2 + ... + trailing
+  for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
+    const lineIdx = startLine + lineOffset;
+    const origLine = origLines[lineOffset];
+    const indent = origLine.substring(0, fixedBoxes[0].actualStart);
+
+    let result = indent;
+    for (let boxIdx = 0; boxIdx < fixedBoxes.length; boxIdx++) {
+      result += fixedBoxes[boxIdx].fixedSub[lineOffset];
+      if (boxIdx < fixedBoxes.length - 1) {
+        result += ' '.repeat(gaps[boxIdx][lineOffset]);
       }
     }
-  }
 
-  // Extract sub-strings for this box using the actual range
-  const subLines: string[] = [];
-  for (let i = startLine; i <= endLine; i++) {
-    const line = (lines[i] || '').padEnd(actualEnd + 1);
-    subLines.push(line.substring(actualStart, actualEnd + 1));
-  }
+    // Append any trailing content after the last box in the original line
+    const lastBoxEnd = fixedBoxes[fixedBoxes.length - 1].lineEnds[lineOffset];
+    const trailing = origLine.substring(lastBoxEnd + 1);
+    const trimmedTrailing = trailing.trimStart();
+    if (trimmedTrailing.length > 0) {
+      result += trailing;
+    }
 
-  // Fix the sub-box using existing logic
-  const fakeRegion: Region = {
-    startLine: 0,
-    endLine: subLines.length - 1,
-    type: region.type,
-    style: region.style,
-  };
-  const fixedSub = fixBox(subLines, fakeRegion);
-
-  // Splice fixed sub-strings back into original lines
-  for (let i = 0; i < fixedSub.length; i++) {
-    const lineIdx = startLine + i;
-    const line = (lines[lineIdx] || '').padEnd(actualEnd + 1);
-    const before = line.substring(0, actualStart);
-    const after = line.substring(actualEnd + 1);
-    lines[lineIdx] = before + fixedSub[i] + after;
+    lines[lineIdx] = result;
   }
 }
 
@@ -234,14 +359,16 @@ function fixMarkdownTable(lines: string[], region: Region): string[] {
   const indent = getIndent(regionLines[0]);
 
   // Parse all rows into cells
-  const parsedRows: { cells: string[]; isSeparator: boolean }[] = [];
+  const parsedRows: { cells: string[]; isSeparator: boolean; isCompact: boolean }[] = [];
   for (const line of regionLines) {
     const trimmed = line.trim();
-    const isSep = /^\|[\s\-:]+(\|[\s\-:]+)*\|$/.test(trimmed);
+    const isSep = isMarkdownSeparator(line);
+    // Detect compact format: first char after '|' is not a space (e.g. |---|---|)
+    const isCompact = isSep && trimmed.length > 1 && trimmed[1] !== ' ';
     // Split by | and drop the empty first/last elements
     const parts = trimmed.split('|');
     const cells = parts.slice(1, -1).map(c => c.trim());
-    parsedRows.push({ cells, isSeparator: isSep });
+    parsedRows.push({ cells, isSeparator: isSep, isCompact });
   }
 
   // Determine the number of columns and max width per column
@@ -269,24 +396,39 @@ function fixMarkdownTable(lines: string[], region: Region): string[] {
         const trimCell = cell.trim();
         const leftColon = trimCell.startsWith(':');
         const rightColon = trimCell.endsWith(':');
-        const dashCount = colWidths[i] - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
-        cells.push(
-          (leftColon ? ':' : '') +
-          '-'.repeat(dashCount) +
-          (rightColon ? ':' : '')
-        );
+        if (row.isCompact) {
+          // Compact: dashes fill colWidths[i] + 2 (to account for missing spaces)
+          const totalWidth = colWidths[i] + 2;
+          const dashCount = totalWidth - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
+          cells.push(
+            (leftColon ? ':' : '') +
+            '-'.repeat(dashCount) +
+            (rightColon ? ':' : '')
+          );
+        } else {
+          const dashCount = colWidths[i] - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
+          cells.push(
+            (leftColon ? ':' : '') +
+            '-'.repeat(dashCount) +
+            (rightColon ? ':' : '')
+          );
+        }
       } else {
         cells.push(visualPadEnd(cell, colWidths[i]));
       }
     }
-    result.push(indent + '| ' + cells.join(' | ') + ' |');
+    if (row.isSeparator && row.isCompact) {
+      result.push(indent + '|' + cells.join('|') + '|');
+    } else {
+      result.push(indent + '| ' + cells.join(' | ') + ' |');
+    }
   }
 
   return result;
 }
 
-/** Fix all detected ASCII structures in the input text */
-export function fixAsciiAlign(text: string): string {
+/** Fix all detected ASCII structures recursively */
+function fixAsciiAlignRecursive(text: string, depth: number): string {
   const lines = text.split('\n');
   const regions = detectRegions(text);
 
@@ -300,15 +442,31 @@ export function fixAsciiAlign(text: string): string {
     return (b.startCol ?? 0) - (a.startCol ?? 0);
   });
 
+  // Group lateral boxes by startLine for joint processing
+  const lateralGroups = new Map<number, Region[]>();
+  const processedLateralLines = new Set<number>();
+
+  for (const region of sortedRegions) {
+    if (region.startCol !== undefined && region.endCol !== undefined) {
+      const key = region.startLine;
+      if (!lateralGroups.has(key)) lateralGroups.set(key, []);
+      lateralGroups.get(key)!.push(region);
+    }
+  }
+
   for (const region of sortedRegions) {
     if (region.type === 'table' && region.style === 'markdown') {
       const fixedLines = fixMarkdownTable(lines, region);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
     } else if (region.startCol !== undefined && region.endCol !== undefined) {
-      // Lateral box: fix in-place within column range
-      fixLateralBox(lines, region);
+      // Lateral box: process all boxes on this line as a group (once)
+      if (!processedLateralLines.has(region.startLine)) {
+        processedLateralLines.add(region.startLine);
+        const group = lateralGroups.get(region.startLine) ?? [region];
+        fixLateralBoxGroup(lines, group, depth);
+      }
     } else {
-      const fixedLines = fixBox(lines, region);
+      const fixedLines = fixBox(lines, region, depth);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
     }
   }
@@ -316,12 +474,14 @@ export function fixAsciiAlign(text: string): string {
   return lines.join('\n');
 }
 
+/** Fix all detected ASCII structures in the input text */
+export function fixAsciiAlign(text: string): string {
+  return fixAsciiAlignRecursive(text, 0);
+}
+
 /** Check if any ASCII structures in the text are misaligned */
 export function checkAlignment(text: string): { aligned: boolean; issues: string[] } {
   const fixed = fixAsciiAlign(text);
-  if (fixed === text) return { aligned: true, issues: [] };
-
-  // Compute diff info
   const origLines = text.split('\n');
   const fixedLines = fixed.split('\n');
   const issues: string[] = [];
@@ -345,5 +505,25 @@ export function checkAlignment(text: string): { aligned: boolean; issues: string
     }
   }
 
+  // Check box content lines for missing padding (at least 1 space on each side)
+  for (const region of regions) {
+    if (region.type !== 'box') continue;
+    for (let i = region.startLine; i <= region.endLine && i < origLines.length; i++) {
+      const line = origLines[i].trim();
+      if (isBorderLine(line)) continue;
+      // Check content lines bounded by vertical chars
+      if (line.length >= 2 && (line.startsWith('|') || line.startsWith('│') || line.startsWith('║'))) {
+        const inner = line.slice(1, -1);
+        if (inner.length > 0 && (!inner.startsWith(' ') || !inner.endsWith(' '))) {
+          issues.push(
+            `Missing content padding at line ${i + 1}`
+          );
+          break; // One issue per region is enough
+        }
+      }
+    }
+  }
+
+  if (issues.length === 0) return { aligned: true, issues: [] };
   return { aligned: false, issues };
 }
