@@ -171,10 +171,17 @@ function fixBox(lines: string[], region: Region, depth: number = 0): string[] {
 }
 
 /** Find the nearest vertical char to a given position */
-function findVerticalNear(line: string, pos: number, tolerance: number): number {
+function findVerticalNear(line: string, pos: number, tolerance: number, preferDirection?: 'left' | 'right'): number {
   for (let d = 0; d <= tolerance; d++) {
-    if (pos + d < line.length && VERTICAL_CHARS.has(line[pos + d])) return pos + d;
-    if (d > 0 && pos - d >= 0 && VERTICAL_CHARS.has(line[pos - d])) return pos - d;
+    if (preferDirection === 'left') {
+      // Check left (pos - d) first, then right (pos + d)
+      if (d > 0 && pos - d >= 0 && VERTICAL_CHARS.has(line[pos - d])) return pos - d;
+      if (pos + d < line.length && VERTICAL_CHARS.has(line[pos + d])) return pos + d;
+    } else {
+      // Default: check right (pos + d) first, then left (pos - d)
+      if (pos + d < line.length && VERTICAL_CHARS.has(line[pos + d])) return pos + d;
+      if (d > 0 && pos - d >= 0 && VERTICAL_CHARS.has(line[pos - d])) return pos - d;
+    }
   }
   return -1;
 }
@@ -233,12 +240,13 @@ function extractLateralBox(
 
   const boxWidth = refEnd - refStart;
   const tolerance = Math.max(Math.ceil(boxWidth * 0.5), 4);
-  let actualStart = refStart;
   const lineEnds: number[] = [];
+  const lineStarts: number[] = [];
 
   for (let i = startLine; i <= endLine; i++) {
     const line = lines[i] || '';
     let lineEnd = refEnd;
+    let lineStart = refStart;
 
     const segments = findBorderSegmentsInFix(line);
     let foundBorder = false;
@@ -252,37 +260,47 @@ function extractLateralBox(
         // a nested inner box border rather than the box's own top/bottom border.
         const isInnerBorder = seg.start > refStart || seg.end < refEnd;
         if (isInnerBorder) {
-          const vertEnd = findVerticalNear(line, refEnd, tolerance);
+          const vertEnd = findVerticalNear(line, refEnd, tolerance, 'left');
           if (vertEnd >= 0 && vertEnd !== seg.end) {
-            const vertStart = findVerticalNear(line, refStart, tolerance);
-            if (vertStart >= 0) actualStart = Math.min(actualStart, vertStart);
+            const vertStart = findVerticalNear(line, refStart, tolerance, 'right');
+            if (vertStart >= 0) lineStart = vertStart;
             lineEnd = vertEnd;
             foundBorder = true;
             break;
           }
         }
-        actualStart = Math.min(actualStart, seg.start);
+        lineStart = seg.start;
         lineEnd = seg.end;
         foundBorder = true;
         break;
       }
     }
     if (!foundBorder) {
-      const startPos = findVerticalNear(line, refStart, tolerance);
-      const endPos = findVerticalNear(line, refEnd, tolerance);
-      if (startPos >= 0) actualStart = Math.min(actualStart, startPos);
+      const startPos = findVerticalNear(line, refStart, tolerance, 'right');
+      const endPos = findVerticalNear(line, refEnd, tolerance, 'left');
+      if (startPos >= 0) lineStart = startPos;
       if (endPos >= 0) lineEnd = endPos;
     }
 
+    lineStarts.push(lineStart);
     lineEnds.push(lineEnd);
   }
 
-  // Extract sub-lines using per-line end positions
+  const actualStart = Math.min(...lineStarts);
+
+  // Extract sub-lines. Use per-line start positions but pad all to consistent
+  // width so fixBox sees uniform sub-lines. This handles the case where border
+  // + is at a different column than content | (off by 1).
+  const maxWidth = Math.max(...lineEnds.map((end, idx) => end - lineStarts[idx] + 1));
   const subLines: string[] = [];
   for (let i = startLine; i <= endLine; i++) {
-    const lineEnd = lineEnds[i - startLine];
-    const line = (lines[i] || '').padEnd(lineEnd + 1);
-    subLines.push(line.substring(actualStart, lineEnd + 1));
+    const idx = i - startLine;
+    const ls = lineStarts[idx];
+    const le = lineEnds[idx];
+    const line = (lines[i] || '').padEnd(le + 1);
+    const sub = line.substring(ls, le + 1);
+    // Pad to maxWidth so fixBox sees consistent widths
+    subLines.push(sub.padEnd(maxWidth));
   }
 
   return { subLines, actualStart, lineEnds };
@@ -319,29 +337,36 @@ function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: nu
     fixedBoxes.push({ actualStart, lineEnds, fixedSub });
   }
 
-  // Measure gaps between adjacent boxes from original lines
-  const gaps: number[][] = []; // gaps[boxIdx][lineOffset] = gap width after box
+  // Measure gaps between adjacent boxes from original lines.
+  // Use the max lineEnd per box (from border rows) for gap measurement.
+  // When border + and content | are at different columns, measure gap from
+  // the border line to get the canonical gap width.
+  const gaps: number[] = []; // gaps[boxIdx] = gap width after box (consistent across all lines)
   for (let boxIdx = 0; boxIdx < sorted.length - 1; boxIdx++) {
-    const gapsForBox: number[] = [];
+    const maxBoxEnd = Math.max(...fixedBoxes[boxIdx].lineEnds);
+
+    // Find the gap width from a border line (where + is at maxBoxEnd)
+    let bestGap = 1;
     for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
       const origLine = origLines[lineOffset];
-      const thisBoxEnd = fixedBoxes[boxIdx].lineEnds[lineOffset]
+      const thisLineEnd = fixedBoxes[boxIdx].lineEnds[lineOffset]
         ?? fixedBoxes[boxIdx].lineEnds[fixedBoxes[boxIdx].lineEnds.length - 1]
         ?? 0;
-
-      // Measure gap: spaces between this box's end and next non-space char in original line
-      let gapWidth = 0;
-      for (let col = thisBoxEnd + 1; col < origLine.length; col++) {
-        if (origLine[col] === ' ') {
-          gapWidth++;
-        } else {
-          break;
+      // Only measure from lines where the end matches the max (border lines)
+      if (thisLineEnd === maxBoxEnd) {
+        let gapWidth = 0;
+        for (let col = maxBoxEnd + 1; col < origLine.length; col++) {
+          if (origLine[col] === ' ') {
+            gapWidth++;
+          } else {
+            break;
+          }
         }
+        bestGap = Math.max(gapWidth, 1);
+        break;
       }
-      // Ensure at least 1 space gap
-      gapsForBox.push(Math.max(gapWidth, 1));
     }
-    gaps.push(gapsForBox);
+    gaps.push(bestGap);
   }
 
   // Reassemble lines: indent + box1 + gap1 + box2 + gap2 + ... + trailing
@@ -361,15 +386,13 @@ function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: nu
         result += ' '.repeat(boxWidth);
       }
       if (boxIdx < fixedBoxes.length - 1) {
-        const gap = gaps[boxIdx]?.[lineOffset] ?? gaps[boxIdx]?.[0] ?? 1;
+        const gap = gaps[boxIdx] ?? 1;
         result += ' '.repeat(gap);
       }
     }
 
     // Append any trailing content after the last box in the original line
-    const lastBoxEnd = fixedBoxes[fixedBoxes.length - 1].lineEnds[lineOffset]
-      ?? fixedBoxes[fixedBoxes.length - 1].lineEnds[fixedBoxes[fixedBoxes.length - 1].lineEnds.length - 1]
-      ?? 0;
+    const lastBoxEnd = Math.max(...fixedBoxes[fixedBoxes.length - 1].lineEnds);
     const trailing = origLine.substring(lastBoxEnd + 1);
     const trimmedTrailing = trailing.trimStart();
     if (trimmedTrailing.length > 0) {

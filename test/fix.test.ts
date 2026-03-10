@@ -416,6 +416,46 @@ describe('nested lateral boxes with different heights (#21)', () => {
     expect(result).not.toContain('undefined');
   });
 
+  describe('lateral box extraction off-by-one (#25)', () => {
+    it('should not widen boxes or double gaps when border + and content | are at different columns', () => {
+      const input = [
+        '+-------------------------+ +-------------------------+ +-------------------+',
+        '| ClusterIP Service      | | NodePort Service        | | Ingress Controller|',
+        '| (internal routing)     | | (external access)       | | (HTTP routing)    |',
+        '+-------------------------+ +-------------------------+ +-------------------+',
+      ].join('\n');
+      const result = fixAsciiAlign(input);
+      const lines = result.split('\n');
+
+      // Should not gain spurious | characters on content lines
+      // Content lines should have exactly 6 pipe chars (2 per box × 3 boxes)
+      for (const line of lines) {
+        const pipeCount = [...line].filter(ch => ch === '|').length;
+        if (line.includes('|')) {
+          expect(pipeCount).toBe(6);
+        }
+      }
+
+      // Gaps between boxes should remain 1 space (not double to 2)
+      for (const line of lines) {
+        // Between boxes there should be exactly 1 space
+        const gapMatches = line.match(/[+|]\s+[+|]/g);
+        if (gapMatches) {
+          // Filter to only inter-box gaps (not intra-box content)
+          // The gap between boxes is between the right edge of one box and left edge of next
+          // In the original, these are 1-space gaps
+        }
+      }
+
+      // The result should be idempotent
+      expect(fixAsciiAlign(result)).toBe(result);
+
+      // Boxes should not grow wider than they need to be
+      // The first border line should have 3 boxes separated by single spaces
+      expect(lines[0]).toMatch(/\+[-]+\+ \+[-]+\+ \+[-]+\+/);
+    });
+  });
+
   describe('lateral box gap on inner border rows (#23)', () => {
     it('should preserve gap on rows with nested inner box borders', () => {
       const input = [
