@@ -415,4 +415,42 @@ describe('nested lateral boxes with different heights (#21)', () => {
     const result = fixAsciiAlign(input);
     expect(result).not.toContain('undefined');
   });
+
+  describe('lateral box gap on inner border rows (#23)', () => {
+    it('should preserve gap on rows with nested inner box borders', () => {
+      const input = [
+        '+-------------+ +-------------+',
+        '| Box A       | | Box B       |',
+        '| +---------+ | | +---------+ |',
+        '| | inner   | | | | inner   | |',
+        '| +---------+ | | +---------+ |',
+        '+-------------+ +-------------+',
+      ].join('\n');
+      const result = fixAsciiAlign(input);
+      // Output should preserve the input (already well-aligned)
+      expect(result).toBe(input);
+      // Idempotent
+      expect(fixAsciiAlign(result)).toBe(result);
+    });
+
+    it('should preserve 3-space gap with nested boxes', () => {
+      const input = [
+        '+---------------------------+   +-----------------------------------------------+',
+        '| Control Plane             |   | Worker Node 1                                 |',
+        '| +-----------------------+ |   | +-------------------------------------------+ |',
+        '| | kube-apiserver        | |   | | kubelet                                   | |',
+        '| +-----------------------+ |   | +-------------------------------------------+ |',
+        '+---------------------------+   +-----------------------------------------------+',
+      ].join('\n');
+      const result = fixAsciiAlign(input);
+      expect(result).not.toContain('undefined');
+      // Every line should have the 3-space gap preserved
+      const lines = result.split('\n');
+      for (const line of lines) {
+        // Between the two lateral boxes there should be 3 spaces
+        expect(line).toMatch(/[|+]\s{3}[|+]/);
+      }
+      expect(fixAsciiAlign(result)).toBe(result);
+    });
+  });
 });
