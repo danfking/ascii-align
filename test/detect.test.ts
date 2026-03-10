@@ -188,6 +188,41 @@ describe('detectRegions', () => {
     }
   });
 
+  it('should not detect sequence diagram lifelines as markdown table', () => {
+    const input = [
+      'Alice    Bob',
+      '  |       |',
+      '  |------>|',
+      '  |       |',
+      '  |<------|',
+      '  |       |',
+    ].join('\n');
+    const regions = detectRegions(input);
+    // Should NOT detect lifeline rows as a table
+    const tables = regions.filter(r => r.type === 'table');
+    expect(tables).toHaveLength(0);
+  });
+
+  it('should still detect real markdown tables', () => {
+    const input = '| A | B |\n|---|---|\n| 1 | 2 |';
+    const regions = detectRegions(input);
+    expect(regions.some(r => r.type === 'table')).toBe(true);
+  });
+
+  it('should detect empty box with no content lines', () => {
+    const input = '+------+\n+------+';
+    const regions = detectRegions(input);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].type).toBe('box');
+  });
+
+  it('should detect Unicode empty box', () => {
+    const input = '┌──────┐\n└──────┘';
+    const regions = detectRegions(input);
+    expect(regions).toHaveLength(1);
+    expect(regions[0].type).toBe('box');
+  });
+
   it('detects lateral boxes in class hierarchy (agent3-prompt3)', () => {
     const input = readFileSync(join(__dirname, 'generated', 'agent3-prompt3.txt'), 'utf-8');
     const regions = detectRegions(input);
