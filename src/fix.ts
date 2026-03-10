@@ -245,6 +245,16 @@ function extractLateralBox(
     for (const seg of segments) {
       if (Math.abs(seg.start - refStart) <= tolerance &&
           Math.abs(seg.end - refEnd) <= tolerance) {
+        // Check if there's also a vertical bar near refEnd — if so,
+        // this is an inner border row (e.g. "| +---+ |"), not the box's own border.
+        const vertEnd = findVerticalNear(line, refEnd, tolerance);
+        if (vertEnd >= 0 && vertEnd !== seg.end) {
+          const vertStart = findVerticalNear(line, refStart, tolerance);
+          if (vertStart >= 0) actualStart = Math.min(actualStart, vertStart);
+          lineEnd = vertEnd;
+          foundBorder = true;
+          break;
+        }
         actualStart = Math.min(actualStart, seg.start);
         lineEnd = seg.end;
         foundBorder = true;
