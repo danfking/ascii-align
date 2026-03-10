@@ -369,3 +369,50 @@ describe('checkAlignment', () => {
     expect(result.aligned).toBe(true);
   });
 });
+
+describe('nested lateral boxes with different heights (#21)', () => {
+  it('should not produce undefined when left box is taller than right box', () => {
+    const input = [
+      '+------+ +------+',
+      '| A    | | B    |',
+      '| a2   | | b2   |',
+      '| a3   | +------+',
+      '+------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    expect(result).not.toContain('undefined');
+    expect(fixAsciiAlign(result)).toBe(result); // idempotent
+  });
+
+  it('should not produce undefined when right box is taller than left box', () => {
+    const input = [
+      '+------+ +------+',
+      '| A    | | B    |',
+      '| a2   | | b2   |',
+      '+------+ | b3   |',
+      '         +------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    expect(result).not.toContain('undefined');
+    expect(fixAsciiAlign(result)).toBe(result); // idempotent
+  });
+
+  it('should handle k8s-style nested lateral boxes with different heights', () => {
+    const input = [
+      '+--------------------------------------+',
+      '| Cluster                              |',
+      '| +----------------+ +----------------+|',
+      '| | Control Plane  | | Worker Node    ||',
+      '| | +------------+ | | +------------+ ||',
+      '| | | apiserver  | | | | kubelet    | ||',
+      '| | +------------+ | | +------------+ ||',
+      '| +----------------+ | +----+ +----+  ||',
+      '|                    | | P1 | | P2 |  ||',
+      '|                    | +----+ +----+  ||',
+      '|                    +----------------+|',
+      '+--------------------------------------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    expect(result).not.toContain('undefined');
+  });
+});

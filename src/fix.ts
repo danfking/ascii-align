@@ -279,8 +279,8 @@ function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: nu
 
   // Sort left-to-right by startCol
   const sorted = [...lateralRegions].sort((a, b) => (a.startCol ?? 0) - (b.startCol ?? 0));
-  const startLine = sorted[0].startLine;
-  const endLine = sorted[0].endLine;
+  const startLine = Math.min(...sorted.map(r => r.startLine));
+  const endLine = Math.max(...sorted.map(r => r.endLine));
 
   // Save original lines for gap measurement
   const origLines: string[] = [];
@@ -309,7 +309,9 @@ function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: nu
     const gapsForBox: number[] = [];
     for (let lineOffset = 0; lineOffset <= endLine - startLine; lineOffset++) {
       const origLine = origLines[lineOffset];
-      const thisBoxEnd = fixedBoxes[boxIdx].lineEnds[lineOffset];
+      const thisBoxEnd = fixedBoxes[boxIdx].lineEnds[lineOffset]
+        ?? fixedBoxes[boxIdx].lineEnds[fixedBoxes[boxIdx].lineEnds.length - 1]
+        ?? 0;
 
       // Measure gap: spaces between this box's end and next non-space char in original line
       let gapWidth = 0;
@@ -334,21 +336,33 @@ function fixLateralBoxGroup(lines: string[], lateralRegions: Region[], depth: nu
 
     let result = indent;
     for (let boxIdx = 0; boxIdx < fixedBoxes.length; boxIdx++) {
-      result += fixedBoxes[boxIdx].fixedSub[lineOffset];
+      const sub = fixedBoxes[boxIdx].fixedSub[lineOffset];
+      if (sub !== undefined) {
+        result += sub;
+      } else {
+        // Box ended above this line — fill with spaces matching its width
+        const boxWidth = fixedBoxes[boxIdx].fixedSub[0]?.length ?? 0;
+        result += ' '.repeat(boxWidth);
+      }
       if (boxIdx < fixedBoxes.length - 1) {
-        result += ' '.repeat(gaps[boxIdx][lineOffset]);
+        const gap = gaps[boxIdx]?.[lineOffset] ?? gaps[boxIdx]?.[0] ?? 1;
+        result += ' '.repeat(gap);
       }
     }
 
     // Append any trailing content after the last box in the original line
-    const lastBoxEnd = fixedBoxes[fixedBoxes.length - 1].lineEnds[lineOffset];
+    const lastBoxEnd = fixedBoxes[fixedBoxes.length - 1].lineEnds[lineOffset]
+      ?? fixedBoxes[fixedBoxes.length - 1].lineEnds[fixedBoxes[fixedBoxes.length - 1].lineEnds.length - 1]
+      ?? 0;
     const trailing = origLine.substring(lastBoxEnd + 1);
     const trimmedTrailing = trailing.trimStart();
     if (trimmedTrailing.length > 0) {
       result += trailing;
     }
 
-    lines[lineIdx] = result;
+    // Trim trailing whitespace to prevent space accumulation on lines
+    // where shorter boxes have ended and been filled with spaces
+    lines[lineIdx] = result.trimEnd();
   }
 }
 
