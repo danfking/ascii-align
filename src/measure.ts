@@ -1,11 +1,30 @@
 import stringWidth from 'string-width';
 
 /**
+ * Replace tab characters with spaces aligned to tab stops.
+ */
+export function expandTabs(str: string, tabSize = 8): string {
+  let result = '';
+  let col = 0;
+  for (const ch of str) {
+    if (ch === '\t') {
+      const spaces = tabSize - (col % tabSize);
+      result += ' '.repeat(spaces);
+      col += spaces;
+    } else {
+      result += ch;
+      col += stringWidth(ch);
+    }
+  }
+  return result;
+}
+
+/**
  * Get the visual display width of a string.
- * Handles CJK characters (width 2), emoji, ANSI escape codes, etc.
+ * Handles CJK characters (width 2), emoji, ANSI escape codes, tabs, etc.
  */
 export function visualWidth(str: string): number {
-  return stringWidth(str);
+  return stringWidth(expandTabs(str));
 }
 
 /**
