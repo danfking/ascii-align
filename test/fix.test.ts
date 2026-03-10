@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixAsciiAlign, checkAlignment } from '../src/fix.js';
+import { detectRegions } from '../src/detect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures', name), 'utf-8');
@@ -165,6 +166,185 @@ describe('fixAsciiAlign', () => {
     // Bottom border fill should be Unicode ─
     expect(lines[2]).not.toContain('-');
     expect(lines[0].length).toBe(lines[2].length);
+  });
+});
+
+describe('nested boxes', () => {
+  it('fixes basic nested box', () => {
+    const input = fixture('nested-basic-misaligned.txt');
+    const result = fixAsciiAlign(input);
+    // The inner box should be fixed (aligned borders)
+    const lines = result.split('\n');
+    // Find inner border lines (lines containing inner +---+)
+    const innerBorderLines = lines.filter(l => {
+      const trimmed = l.trim();
+      // Inner borders: outer | ... +---+ ... |
+      return trimmed.startsWith('|') && trimmed.endsWith('|') && l.includes('+') && l.includes('-');
+    });
+    // Inner borders should all have the same width segment
+    if (innerBorderLines.length >= 2) {
+      const getInnerBorder = (l: string) => {
+        const match = l.match(/\+[-]+\+/);
+        return match ? match[0].length : 0;
+      };
+      const widths = innerBorderLines.map(getInnerBorder);
+      expect(new Set(widths).size).toBe(1);
+    }
+    // Inner content lines should be padded correctly
+    expect(result).toContain('inner content');
+    expect(result).toContain('short');
+  });
+
+  it('checkAlignment detects nested misalignment', () => {
+    const input = fixture('nested-basic-misaligned.txt');
+    const result = checkAlignment(input);
+    expect(result.aligned).toBe(false);
+  });
+
+  it('fixes multi-level nesting', () => {
+    const input = fixture('nested-multi-level-misaligned.txt');
+    const result = fixAsciiAlign(input);
+    // Level 3 inner box should be fixed
+    expect(result).toContain('Level 3 content');
+    expect(result).toContain('short');
+    // The result should pass alignment check
+    const check = checkAlignment(result);
+    expect(check.aligned).toBe(true);
+  });
+
+  it('is idempotent on already-fixed nested boxes', () => {
+    const input = fixture('nested-basic-misaligned.txt');
+    const fixed = fixAsciiAlign(input);
+    const fixedAgain = fixAsciiAlign(fixed);
+    expect(fixedAgain).toBe(fixed);
+  });
+
+  it('fixed output passes checkAlignment', () => {
+    const input = fixture('nested-basic-misaligned.txt');
+    const fixed = fixAsciiAlign(input);
+    const check = checkAlignment(fixed);
+    expect(check.aligned).toBe(true);
+  });
+
+  it('handles deep nesting without throwing (depth limit)', () => {
+    // Build 10-level nested box programmatically
+    let content = 'deepest';
+    for (let i = 0; i < 10; i++) {
+      const lines = content.split('\n');
+      const maxWidth = Math.max(...lines.map(l => l.length));
+      const border = '+' + '-'.repeat(maxWidth + 2) + '+';
+      const padded = lines.map(l => '| ' + l.padEnd(maxWidth) + ' |');
+      content = [border, ...padded, border].join('\n');
+    }
+    // Should not throw
+    expect(() => fixAsciiAlign(content)).not.toThrow();
+  });
+});
+
+describe('markdown table separator format', () => {
+  it('should preserve compact markdown table separator format', () => {
+    const input = '| Name | Age |\n|------|-----|\n| Alice| 30  |';
+    const result = fixAsciiAlign(input);
+    // The separator should remain compact (no spaces around dashes)
+    expect(result).toContain('|---');
+    expect(result).not.toMatch(/\| -/);  // Should not add space before dashes
+  });
+
+  it('should preserve spaced markdown table separator format', () => {
+    const input = '| Name | Age |\n| ------ | ----- |\n| Alice | 30 |';
+    const result = fixAsciiAlign(input);
+    expect(result).toContain('| -');  // Should keep spaces
+  });
+
+  it('should preserve compact separator with alignment markers', () => {
+    const input = '| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |';
+    const result = fixAsciiAlign(input);
+    // Alignment markers preserved, compact format kept
+    expect(result).toMatch(/\|:/);  // Compact format preserved
+  });
+});
+
+describe('content padding check', () => {
+  it('should report misaligned when content has no left padding', () => {
+    const input = '+------+\n|Short |\n+------+';
+    const result = checkAlignment(input);
+    expect(result.aligned).toBe(false);
+  });
+
+  it('should report misaligned when content has no right padding', () => {
+    const input = '+------+\n| Short|\n+------+';
+    const result = checkAlignment(input);
+    expect(result.aligned).toBe(false);
+  });
+
+  it('should report aligned when content has proper padding', () => {
+    const input = '+------+\n| OK   |\n+------+';
+    const result = checkAlignment(input);
+    expect(result.aligned).toBe(true);
+  });
+});
+
+describe('lateral box wide content and gap spacing (#10, #13)', () => {
+  it('should not merge lateral boxes when bottom border expands toward adjacent box', () => {
+    const input = [
+      '+------+   +------+',
+      '| Car  |   | Bike |',
+      '+----------+   +------+',
+    ].join('\n');
+
+    // Verify detection finds two lateral boxes
+    const regions = detectRegions(input);
+    const lateralRegions = regions.filter(r => r.startCol !== undefined);
+    expect(lateralRegions.length).toBe(2);
+
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Should fix as two separate boxes, not merge them
+    expect(lines[0]).toMatch(/\+[-]+\+\s+\+[-]+\+/);
+    // Result should be idempotent
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should preserve gap spacing between lateral boxes after fix', () => {
+    const input = [
+      '+---+   +---+',
+      '| A |   | B |',
+      '+--+   +---+',  // First box bottom border misaligned (shorter)
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    // Result should be idempotent
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should preserve 5-space gap between lateral boxes', () => {
+    const input = [
+      '+---+     +---+',
+      '| A |     | B |',
+      '+--+     +---+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // All lines should have consistent gap width (at least 5 spaces)
+    for (const line of lines) {
+      const match = line.match(/^(\S+)(\s+)(\S+)$/);
+      if (match) {
+        expect(match[2].length).toBeGreaterThanOrEqual(5);
+      }
+    }
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('should not expand first box border into the gap of adjacent lateral box', () => {
+    const input = [
+      '+--------+   +--------+',
+      '| Hello  |   | World  |',
+      '+-----------+   +--------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Should still have two separate boxes
+    expect(lines[0]).toMatch(/\+[-]+\+\s+\+[-]+\+/);
+    expect(fixAsciiAlign(result)).toBe(result);
   });
 });
 
