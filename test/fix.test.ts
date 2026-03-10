@@ -453,4 +453,54 @@ describe('nested lateral boxes with different heights (#21)', () => {
       expect(fixAsciiAlign(result)).toBe(result);
     });
   });
+
+  describe('lateral box bottom border erased when box ends before taller sibling (#24)', () => {
+    it('should preserve shorter box bottom border when taller sibling continues', () => {
+      const input = [
+        '+-----------------------------------------------------------------------------------+',
+        '| Cluster                                                                           |',
+        '|                                                                                   |',
+        '| +---------------------------+   +-----------------------------------------------+ |',
+        '| | Control Plane             |   | Worker Node 1                                 | |',
+        '| |                           |   |                                               | |',
+        '| | +-----------------------+ |   | +-------------------------------------------+ | |',
+        '| | | kube-apiserver        | |   | | kubelet                                   | | |',
+        '| | | (REST API gateway)    | |   | | (node agent)                              | | |',
+        '| | +-----------------------+ |   | +-------------------------------------------+ | |',
+        '| +---------------------------+   |                                               | |',
+        '|                                 | +-------------------------------------------+ | |',
+        '|                                 | | Container Runtime                          | | |',
+        '|                                 | +-------------------------------------------+ | |',
+        '|                                 +-----------------------------------------------+ |',
+        '+-----------------------------------------------------------------------------------+',
+      ].join('\n');
+      const result = fixAsciiAlign(input);
+      // The Control Plane bottom border must be preserved on line 11 (0-indexed line 10)
+      const lines = result.split('\n');
+      expect(lines[10]).toContain('+---------------------------+');
+      // Should be idempotent
+      expect(fixAsciiAlign(result)).toBe(result);
+    });
+
+    it('should preserve shorter box bottom border in simple lateral case', () => {
+      const input = [
+        '+---------------------------+   +-----------------------------------------------+',
+        '| Control Plane             |   | Worker Node 1                                 |',
+        '| +-----------------------+ |   | +-------------------------------------------+ |',
+        '| | kube-apiserver        | |   | | kubelet                                   | |',
+        '| +-----------------------+ |   | +-------------------------------------------+ |',
+        '+---------------------------+   |                                               |',
+        '                                | +-------------------------------------------+ |',
+        '                                | | Container Runtime                          | |',
+        '                                | +-------------------------------------------+ |',
+        '                                +-----------------------------------------------+',
+      ].join('\n');
+      const result = fixAsciiAlign(input);
+      // The Control Plane bottom border on line 5 (0-indexed) must be preserved
+      const lines = result.split('\n');
+      expect(lines[5]).toContain('+---------------------------+');
+      // Should be idempotent
+      expect(fixAsciiAlign(result)).toBe(result);
+    });
+  });
 });

@@ -181,6 +181,24 @@ function detectLateralBox(
           j = k;
           continue;
         }
+        // When two consecutive border lines are found (no content between them),
+        // check if the current border is an inner/nested border and the next line
+        // is a better match for the outer box's bottom border. This prevents
+        // treating an inner box's closing border as the outer box's bottom border.
+        if (!moreContent && k < lines.length) {
+          const nextBorderSeg = findBorderSegmentNear(lines[k], start, end, borderTolerance);
+          if (nextBorderSeg) {
+            // Compare which border better matches the box boundaries:
+            // the inner border (borderSeg at j) is typically offset from start/end,
+            // while the outer bottom border matches start/end more closely.
+            const jDist = Math.abs(borderSeg.start - start) + Math.abs(borderSeg.end - end);
+            const kDist = Math.abs(nextBorderSeg.start - start) + Math.abs(nextBorderSeg.end - end);
+            if (kDist < jDist) {
+              // The next border is a better match — current border is an inner border
+              return k;
+            }
+          }
+        }
         // Bottom border found
         return j;
       }
