@@ -160,7 +160,7 @@ function findBorderSegmentsInFix(line: string): { start: number; end: number }[]
 }
 
 /** Fix a lateral box: find actual column range, extract, fix, splice back */
-function fixLateralBox(lines: string[], region: Region): void {
+function fixLateralBox(lines: string[], region: Region, maxEnd?: number): void {
   const { startCol: refStart, endCol: refEnd, startLine, endLine } = region;
   if (refStart === undefined || refEnd === undefined) return;
 
@@ -201,6 +201,18 @@ function fixLateralBox(lines: string[], region: Region): void {
     }
   }
 
+  // Clamp actualEnd to maxEnd to prevent overlapping into adjacent boxes
+  if (maxEnd !== undefined) {
+    actualEnd = Math.min(actualEnd, maxEnd);
+  }
+
+  // Measure the gap (spaces) between this box's end and the next content on each line
+  const originalGaps: number[] = [];
+  for (let i = startLine; i <= endLine; i++) {
+    const after = (lines[i] || '').substring(actualEnd + 1);
+    originalGaps.push(after.length - after.trimStart().length);
+  }
+
   // Extract sub-strings for this box using the actual range
   const subLines: string[] = [];
   for (let i = startLine; i <= endLine; i++) {
@@ -217,13 +229,14 @@ function fixLateralBox(lines: string[], region: Region): void {
   };
   const fixedSub = fixBox(subLines, fakeRegion);
 
-  // Splice fixed sub-strings back into original lines
+  // Splice fixed sub-strings back into original lines, restoring original gaps
   for (let i = 0; i < fixedSub.length; i++) {
     const lineIdx = startLine + i;
     const line = (lines[lineIdx] || '').padEnd(actualEnd + 1);
     const before = line.substring(0, actualStart);
-    const after = line.substring(actualEnd + 1);
-    lines[lineIdx] = before + fixedSub[i] + after;
+    const afterContent = line.substring(actualEnd + 1).trimStart();
+    const gap = ' '.repeat(originalGaps[i] || 0);
+    lines[lineIdx] = before + fixedSub[i] + gap + afterContent;
   }
 }
 
@@ -234,14 +247,16 @@ function fixMarkdownTable(lines: string[], region: Region): string[] {
   const indent = getIndent(regionLines[0]);
 
   // Parse all rows into cells
-  const parsedRows: { cells: string[]; isSeparator: boolean }[] = [];
+  const parsedRows: { cells: string[]; isSeparator: boolean; isCompact: boolean }[] = [];
   for (const line of regionLines) {
     const trimmed = line.trim();
     const isSep = /^\|[\s\-:]+(\|[\s\-:]+)*\|$/.test(trimmed);
+    // Detect compact format: first char after '|' is not a space (e.g. |---|---|)
+    const isCompact = isSep && trimmed.length > 1 && trimmed[1] !== ' ';
     // Split by | and drop the empty first/last elements
     const parts = trimmed.split('|');
     const cells = parts.slice(1, -1).map(c => c.trim());
-    parsedRows.push({ cells, isSeparator: isSep });
+    parsedRows.push({ cells, isSeparator: isSep, isCompact });
   }
 
   // Determine the number of columns and max width per column
@@ -269,17 +284,32 @@ function fixMarkdownTable(lines: string[], region: Region): string[] {
         const trimCell = cell.trim();
         const leftColon = trimCell.startsWith(':');
         const rightColon = trimCell.endsWith(':');
-        const dashCount = colWidths[i] - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
-        cells.push(
-          (leftColon ? ':' : '') +
-          '-'.repeat(dashCount) +
-          (rightColon ? ':' : '')
-        );
+        if (row.isCompact) {
+          // Compact: dashes fill colWidths[i] + 2 (to account for missing spaces)
+          const totalWidth = colWidths[i] + 2;
+          const dashCount = totalWidth - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
+          cells.push(
+            (leftColon ? ':' : '') +
+            '-'.repeat(dashCount) +
+            (rightColon ? ':' : '')
+          );
+        } else {
+          const dashCount = colWidths[i] - (leftColon ? 1 : 0) - (rightColon ? 1 : 0);
+          cells.push(
+            (leftColon ? ':' : '') +
+            '-'.repeat(dashCount) +
+            (rightColon ? ':' : '')
+          );
+        }
       } else {
         cells.push(visualPadEnd(cell, colWidths[i]));
       }
     }
-    result.push(indent + '| ' + cells.join(' | ') + ' |');
+    if (row.isSeparator && row.isCompact) {
+      result.push(indent + '|' + cells.join('|') + '|');
+    } else {
+      result.push(indent + '| ' + cells.join(' | ') + ' |');
+    }
   }
 
   return result;
@@ -305,8 +335,21 @@ export function fixAsciiAlign(text: string): string {
       const fixedLines = fixMarkdownTable(lines, region);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
     } else if (region.startCol !== undefined && region.endCol !== undefined) {
-      // Lateral box: fix in-place within column range
-      fixLateralBox(lines, region);
+      // Lateral box: compute maxEnd from nearest box to the right on the same line
+      let lateralMaxEnd: number | undefined;
+      for (const other of sortedRegions) {
+        if (other === region) continue;
+        if (other.startLine !== region.startLine) continue;
+        if (other.startCol === undefined) continue;
+        if (other.startCol > region.endCol!) {
+          // This box is to the right — limit expansion to just before it
+          const boundary = other.startCol - 1;
+          if (lateralMaxEnd === undefined || boundary < lateralMaxEnd) {
+            lateralMaxEnd = boundary;
+          }
+        }
+      }
+      fixLateralBox(lines, region, lateralMaxEnd);
     } else {
       const fixedLines = fixBox(lines, region);
       lines.splice(region.startLine, region.endLine - region.startLine + 1, ...fixedLines);
@@ -319,9 +362,6 @@ export function fixAsciiAlign(text: string): string {
 /** Check if any ASCII structures in the text are misaligned */
 export function checkAlignment(text: string): { aligned: boolean; issues: string[] } {
   const fixed = fixAsciiAlign(text);
-  if (fixed === text) return { aligned: true, issues: [] };
-
-  // Compute diff info
   const origLines = text.split('\n');
   const fixedLines = fixed.split('\n');
   const issues: string[] = [];
@@ -345,5 +385,24 @@ export function checkAlignment(text: string): { aligned: boolean; issues: string
     }
   }
 
+  // Check box content lines for missing padding (at least 1 space on each side)
+  for (const region of regions) {
+    if (region.type !== 'box') continue;
+    for (let i = region.startLine; i <= region.endLine && i < origLines.length; i++) {
+      const line = origLines[i].trim();
+      if (isBorderLine(line)) continue;
+      if (line.length >= 2 && (line.startsWith('|') || line.startsWith('│') || line.startsWith('║'))) {
+        const inner = line.slice(1, -1);
+        if (inner.length > 0 && (!inner.startsWith(' ') || !inner.endsWith(' '))) {
+          issues.push(
+            `Missing content padding at line ${i + 1}`
+          );
+          break;
+        }
+      }
+    }
+  }
+
+  if (issues.length === 0) return { aligned: true, issues: [] };
   return { aligned: false, issues };
 }
