@@ -544,3 +544,134 @@ describe('nested lateral boxes with different heights (#21)', () => {
     });
   });
 });
+
+describe('junction character preservation (#29)', () => {
+  it('preserves ┬ junctions in top border when box is widened', () => {
+    const input = [
+      '┌──────┬──────┬──────┐',
+      '│ A    │ B │ C    │',
+      '└──────┴──────┴──────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Top border should still contain ┬ junctions
+    expect(lines[0]).toContain('┬');
+    expect([...lines[0]].filter(ch => ch === '┬').length).toBe(2);
+    // Bottom border should still contain ┴ junctions
+    expect(lines[2]).toContain('┴');
+    expect([...lines[2]].filter(ch => ch === '┴').length).toBe(2);
+    // Should be idempotent
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('preserves ┼ junctions in mid border when box is widened', () => {
+    const input = [
+      '┌──────┬──────┐',
+      '│ A    │ B    │',
+      '├──────┼──────┤',
+      '│ C │ D    │',
+      '└──────┴──────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Mid border should contain ┼
+    expect(lines[2]).toContain('┼');
+    // Top border should contain ┬
+    expect(lines[0]).toContain('┬');
+    // Bottom border should contain ┴
+    expect(lines[4]).toContain('┴');
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('preserves + junctions in ASCII style borders', () => {
+    const input = [
+      '+------+------+------+',
+      '| A    | B | C    |',
+      '+------+------+------+',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Each border should have 4 '+' chars (corners + 2 internal junctions)
+    expect([...lines[0]].filter(ch => ch === '+').length).toBe(4);
+    expect([...lines[2]].filter(ch => ch === '+').length).toBe(4);
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('preserves junctions when border needs to be widened', () => {
+    const input = [
+      '┌──┬──┐',
+      '│ A longer cell │ B  │',
+      '└──┴──┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Junctions should be preserved, border widened by adding ─ before right corner
+    expect(lines[0]).toContain('┬');
+    expect(lines[2]).toContain('┴');
+    // Width should match content
+    expect(lines[0].length).toBe(lines[1].length);
+  });
+
+  it('preserves junctions when border needs to be narrowed', () => {
+    const input = [
+      '┌──────────┬──────────┬──────────┐',
+      '│ A  │ B  │ C  │',
+      '└──────────┴──────────┴──────────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Junctions should still be present
+    expect(lines[0]).toContain('┬');
+    expect([...lines[0]].filter(ch => ch === '┬').length).toBe(2);
+    expect(lines[2]).toContain('┴');
+    expect([...lines[2]].filter(ch => ch === '┴').length).toBe(2);
+  });
+
+  it('handles the full 3-column layout from issue #29', () => {
+    const input = [
+      '┌──────────────────┬──────────────────┬──────────────────┐',
+      '│ Header 1         │ Header 2         │ Header 3         │',
+      '├──────────────────┼──────────────────┼──────────────────┤',
+      '│ Row 1 Col 1      │ Row 1 Col 2      │ Row 1 Col 3      │',
+      '│ Row 2 Col 1 │ Row 2 Col 2 │ Row 2 Col 3 │',
+      '└──────────────────┴──────────────────┴──────────────────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    const lines = result.split('\n');
+    // Top border: 2 ┬ junctions
+    expect([...lines[0]].filter(ch => ch === '┬').length).toBe(2);
+    // Mid border: 2 ┼ junctions
+    expect([...lines[2]].filter(ch => ch === '┼').length).toBe(2);
+    // Bottom border: 2 ┴ junctions
+    expect([...lines[5]].filter(ch => ch === '┴').length).toBe(2);
+    // All lines same width
+    const widths = new Set(lines.map(l => l.length));
+    expect(widths.size).toBe(1);
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+
+  it('preserves already-aligned box with junctions', () => {
+    const input = [
+      '┌──────┬──────┬──────┐',
+      '│ A    │ B    │ C    │',
+      '└──────┴──────┴──────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    expect(result).toBe(input);
+  });
+
+  it('preserves junctions during nested box resize (phase 2)', () => {
+    const input = [
+      '┌────────────────────────┐',
+      '│ ┌──┬──┐               │',
+      '│ │ A  │ B  │               │',
+      '│ └──┴──┘               │',
+      '└────────────────────────┘',
+    ].join('\n');
+    const result = fixAsciiAlign(input);
+    // Inner box should still have junction chars
+    expect(result).toContain('┬');
+    expect(result).toContain('┴');
+    expect(fixAsciiAlign(result)).toBe(result);
+  });
+});
