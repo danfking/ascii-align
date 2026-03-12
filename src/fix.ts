@@ -43,6 +43,65 @@ function mapCornerToStyle(ch: string, chars: BoxChars, side: 'left' | 'right', p
   return side === 'left' ? chars.teeLeft : chars.teeRight;
 }
 
+// Characters that are internal junction points (not corners/tees used at edges)
+const JUNCTION_CHARS = new Set([
+  '+', '┬', '┳', '╦', '┴', '┻', '╩', '┼', '╋', '╬',
+]);
+
+// All horizontal border characters across all styles
+const ALL_HORIZONTAL_CHARS = new Set(['-', '─', '━', '═']);
+
+/**
+ * Map an interior junction character to the correct style.
+ * Horizontal chars get replaced with the target style's horizontal.
+ * Junction chars (┬, ┴, ┼, etc.) get mapped to the target style equivalent.
+ */
+function mapInteriorChar(ch: string, chars: BoxChars): string {
+  if (ALL_HORIZONTAL_CHARS.has(ch)) return chars.horizontal;
+  if (TEE_DOWN_CHARS.has(ch)) return chars.teeDown;
+  if (TEE_UP_CHARS.has(ch)) return chars.teeUp;
+  if (CROSS_CHARS.has(ch)) return chars.cross;
+  return ch;
+}
+
+/**
+ * Rebuild a border line preserving internal junction characters.
+ * Adjusts width by adding/removing horizontal chars from the right end
+ * (just before the right corner), keeping all junctions in place.
+ * Also normalizes all chars to the target style.
+ */
+function rebuildBorderLine(
+  originalInterior: string,
+  targetWidth: number,
+  chars: BoxChars
+): string {
+  // Normalize interior chars to target style
+  let interior = '';
+  for (const ch of originalInterior) {
+    interior += mapInteriorChar(ch, chars);
+  }
+
+  if (targetWidth === interior.length) return interior;
+
+  if (targetWidth > interior.length) {
+    // Widen: append horizontal chars at the right end
+    const extra = targetWidth - interior.length;
+    return interior + chars.horizontal.repeat(extra);
+  }
+
+  // Narrow: trim horizontal chars from the right, but never remove junctions
+  while (interior.length > targetWidth) {
+    const lastChar = interior[interior.length - 1];
+    if (lastChar === chars.horizontal) {
+      interior = interior.slice(0, -1);
+    } else {
+      // Hit a junction or non-horizontal char — stop trimming
+      break;
+    }
+  }
+  return interior;
+}
+
 /** Extract the leading whitespace (indentation) from a line */
 function getIndent(line: string): string {
   const match = line.match(/^(\s*)/);
@@ -97,8 +156,11 @@ function fixBox(lines: string[], region: Region, depth: number = 0): string[] {
       const left = mapCornerToStyle(firstChar, chars, 'left', position);
       const right = mapCornerToStyle(lastChar, chars, 'right', position);
 
-      // Build the border: left + horizontal fill + right
-      result.push(indent + left + chars.horizontal.repeat(maxContentWidth) + right);
+      // Build the border: left + adjusted interior + right
+      // Preserve internal junction characters from the original border
+      const originalInterior = trimmed.slice(1, -1);
+      const adjustedInterior = rebuildBorderLine(originalInterior, maxContentWidth, chars);
+      result.push(indent + left + adjustedInterior + right);
     } else {
       const trimmed = line.trim();
       const vert = chars.vertical;
@@ -156,11 +218,13 @@ function fixBox(lines: string[], region: Region, depth: number = 0): string[] {
             const padded = visualPadEnd(fixedLine, newMaxWidth);
             result[i] = indent + vert + padded + vert;
           } else if (newMaxWidth !== maxContentWidth) {
-            // Rebuild border at new width
+            // Rebuild border at new width, preserving junctions
             const stripped = result[i].substring(indent.length);
             const firstChar = stripped[0];
             const lastChar = stripped[stripped.length - 1];
-            result[i] = indent + firstChar + chars.horizontal.repeat(newMaxWidth) + lastChar;
+            const borderInterior = stripped.slice(1, -1);
+            const adjustedBorderInterior = rebuildBorderLine(borderInterior, newMaxWidth, chars);
+            result[i] = indent + firstChar + adjustedBorderInterior + lastChar;
           }
         }
       }
